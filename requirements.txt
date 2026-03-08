@@ -1,0 +1,32 @@
+# WildLIFT Framework Requirements
+# Note: CUT3R backend has its own requirements — see backends/cut3r/requirements.txt
+
+# Core dependencies (shared across modules)
+numpy>=1.24.0
+scipy>=1.10.0
+opencv-python>=4.7.0
+matplotlib>=3.7.0
+Pillow>=9.0.0
+scikit-learn>=1.2.0
+
+# WildLIFT-RT (reconstruction + tracking)
+torch>=2.0.0
+torchvision>=0.15.0
+imageio>=2.31.0
+pycocotools>=2.0.6
+
+# WildLIFT-A (annotation — requires viser for 3D UI)
+viser>=0.1.0
+
+# WildLIFT-V (viewpoint analysis)
+# shapely and pycocotools are optional but recommended
+shapely>=2.0.0
+
+# Optional: baseline tracker comparison (WildLIFT-RT)
+# boxmot>=10.0.0
+
+# Optional: interactive visualization
+# plotly>=5.0.0
+
+# Optional: video/GIF generation
+# imageio[ffmpeg]>=2.31.0

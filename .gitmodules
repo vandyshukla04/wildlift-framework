@@ -1,0 +1,7 @@
+[submodule "backends/cut3r"]
+	path = backends/cut3r
+	url = https://github.com/vandyshukla04/CUT3R.git
+	branch = wildlift-3d-recon
+[submodule "backends/grounded-sam-2"]
+	path = backends/grounded-sam-2
+	url = https://github.com/IDEA-Research/Grounded-SAM-2.git

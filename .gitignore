@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data and models
+data/
+results/
+checkpoints/
+*.pth
+*.ckpt
+*.bin
+examples/
+
+# Logs and artifacts
+*.log
+log.txt
+*.tmp
+test_corrections/
+test_viz_output/
+visualizations/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
