@@ -26,6 +26,27 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _CUT3R_ROOT = _REPO_ROOT / "backends" / "cut3r"
 sys.path.insert(0, str(_CUT3R_ROOT))
 
+
+def _resolve_model_path():
+    """Find model checkpoint, searching common locations."""
+    CKPT_NAME = "cut3r_512_dpt_4_64.pth"
+    candidates = [
+        _CUT3R_ROOT / "src" / CKPT_NAME,
+        _REPO_ROOT / "checkpoints" / CKPT_NAME,
+        Path.home() / ".cache" / "wildlift" / CKPT_NAME,
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    default = _CUT3R_ROOT / "src" / CKPT_NAME
+    print(f"\nWARNING: Model checkpoint not found in any of:")
+    for p in candidates:
+        print(f"  - {p}")
+    print(f"\nDownload it with:")
+    print(f"  cd backends/cut3r/src && gdown --fuzzy https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/view")
+    print(f"Or pass --model_path /path/to/{CKPT_NAME}\n")
+    return str(default)
+
 from add_ckpt_path import add_path_to_dust3r
 import imageio.v2 as iio
 from sklearn.decomposition import PCA
@@ -396,51 +417,17 @@ def add_2d_projection_with_tracks(original_images, bounding_boxes, cam_dict, out
                 img_display = img_np.copy()  # Already uint8 BGR from cv2.imread
 
         # Get camera parameters for this frame
-        # focal = cam_dict["focal"][frame_idx]
-        # pp = cam_dict["pp"][frame_idx]
-        # R = cam_dict["R"][frame_idx]
-        # t = cam_dict["t"][frame_idx]
-        
-        # # Create camera intrinsic matrix
-        # K = np.array([
-        #     [focal, 0, pp[0]],
-        #     [0, focal, pp[1]],
-        #     [0, 0, 1]
-        # ])
-        
-        # Get camera parameters for this frame
         focal = cam_dict["focal"][frame_idx]
         pp = cam_dict["pp"][frame_idx]
         R = cam_dict["R"][frame_idx]
         t = cam_dict["t"][frame_idx]
 
-        # NEW: Detect size mismatch and scale camera parameters
-        img_h, img_w = img_display.shape[:2]
-        # Camera parameters are computed for model size (e.g., 512x288)
-        # We need to scale them to match original image size (e.g., 768x432)
-        model_h, model_w = 288, 512  # These are the model's output dimensions
-        # Note: You can also get these from pts3ds_self shape if available
-
-        # Compute scale factors
-        scale_x = img_w / model_w  # e.g., 768 / 512 = 1.5
-        scale_y = img_h / model_h  # e.g., 432 / 288 = 1.5
-
-        print(f"      📏 Image size: {img_w}x{img_h}, Model size: {model_w}x{model_h}")
-        print(f"      📏 Scale factors: x={scale_x:.3f}, y={scale_y:.3f}")
-
-        # Scale the camera intrinsics
-        focal_scaled = focal * scale_x  # Assuming square pixels (same scale for x and y)
-        pp_scaled = pp * np.array([scale_x, scale_y])
-
-        # Create camera intrinsic matrix with SCALED parameters
+        # Create camera intrinsic matrix (no scaling needed - images resized to model size)
         K = np.array([
-            [focal_scaled, 0, pp_scaled[0]],
-            [0, focal_scaled, pp_scaled[1]],
+            [focal, 0, pp[0]],
+            [0, focal, pp[1]],
             [0, 0, 1]
         ])
-
-        print(f"      📷 Original focal: {focal:.2f}, Scaled focal: {focal_scaled:.2f}")
-        print(f"      📷 Original pp: [{pp[0]:.1f}, {pp[1]:.1f}], Scaled pp: [{pp_scaled[0]:.1f}, {pp_scaled[1]:.1f}]")
 
 
         # Create camera pose matrix
@@ -821,12 +808,27 @@ class Enhanced3DBBoxBackProjector:
             Accumulated points in current frame's coordinate system
         """
         if not self.use_temporal_accumulation:
-            # Just return current frame points
+            # Just return current frame points (transformed to world coords if needed)
             instance_mask = all_instance_labels[frame_idx] == instance_id
             pts3d = all_pts3d[frame_idx]
             if torch.is_tensor(pts3d):
                 pts3d = pts3d.cpu().numpy()
-            return pts3d.reshape(-1, 3)[instance_mask.reshape(-1)]
+            instance_points = pts3d.reshape(-1, 3)[instance_mask.reshape(-1)]
+
+            # Transform to world coordinates (matching OG behavior)
+            if use_pose_transform and camera_poses is not None and frame_idx < len(camera_poses):
+                pose = camera_poses[frame_idx]
+                if torch.is_tensor(pose):
+                    pose = pose.cpu().numpy()
+                if not np.allclose(pose, np.eye(4)):
+                    # Add homogeneous coordinate and transform
+                    instance_points_h = np.concatenate([
+                        instance_points,
+                        np.ones((len(instance_points), 1))
+                    ], axis=1)
+                    instance_points = (pose @ instance_points_h.T).T[:, :3]
+
+            return instance_points
 
         # Estimate drift to determine window size
         drift = self.estimate_pose_drift(camera_poses, frame_idx)
@@ -965,39 +967,54 @@ class Enhanced3DBBoxBackProjector:
 
         return smoothed_bbox
 
-    def filter_outliers(self, points_3d, outlier_factor=2.0):
-        """Remove outlier points using statistical filtering"""
+    def filter_outliers(self, points_3d, outlier_factor=1.5, use_iqr=True):
+        """Remove outlier points using statistical filtering.
+
+        Args:
+            points_3d: (N, 3) array of 3D points
+            outlier_factor: For std-based filtering, keep points within mean + outlier_factor * std
+                           For IQR-based filtering, keep points within Q1 - factor*IQR to Q3 + factor*IQR
+            use_iqr: If True, use IQR-based filtering (more robust to extreme outliers)
+        """
         if len(points_3d) < 10:
             return points_3d
-        
-        # 🔧 FIX: Ensure points_3d is the right shape
+
+        # Ensure points_3d is the right shape
         points_3d = np.array(points_3d)
         if points_3d.ndim != 2 or points_3d.shape[1] != 3:
             print(f"🔍 DEBUG: Unexpected points_3d shape: {points_3d.shape}")
-            # Reshape if needed
             if points_3d.size % 3 == 0:
                 points_3d = points_3d.reshape(-1, 3)
             else:
                 print(f"❌ Cannot reshape points_3d to (N, 3): size={points_3d.size}")
                 return points_3d
-                
+
         # Compute distances from centroid
         centroid = np.mean(points_3d, axis=0)
         distances = np.linalg.norm(points_3d - centroid, axis=1)
-        
-        # Remove points beyond outlier_factor * std
-        threshold = np.mean(distances) + outlier_factor * np.std(distances)
-        inliers = distances < threshold
-        
-        # 🔧 FIX: Ensure inliers is 1D boolean array
+
+        if use_iqr:
+            # IQR-based filtering (more robust to extreme outliers)
+            q1 = np.percentile(distances, 25)
+            q3 = np.percentile(distances, 75)
+            iqr = q3 - q1
+            lower_bound = max(0, q1 - outlier_factor * iqr)
+            upper_bound = q3 + outlier_factor * iqr
+            inliers = (distances >= lower_bound) & (distances <= upper_bound)
+        else:
+            # Standard deviation-based filtering
+            threshold = np.mean(distances) + outlier_factor * np.std(distances)
+            inliers = distances < threshold
+
+        # Ensure inliers is 1D boolean array
         inliers = np.array(inliers).flatten().astype(bool)
-        
+
         # Debug output
-        print(f"🔍 Filtering outliers: {points_3d.shape} -> {np.sum(inliers)} points kept")
-        print(f"   points_3d shape: {points_3d.shape}")
-        print(f"   inliers shape: {inliers.shape}")
-        print(f"   inliers dtype: {inliers.dtype}")
-        
+        n_original = points_3d.shape[0]
+        n_kept = np.sum(inliers)
+        pct_kept = 100 * n_kept / n_original
+        print(f"🔍 Filtering outliers: {n_original} -> {n_kept} points ({pct_kept:.1f}% kept)")
+
         # Apply filter
         try:
             filtered_points = points_3d[inliers]
@@ -1777,8 +1794,8 @@ def parse_args():
     parser.add_argument(
         "--model_path",
         type=str,
-        default=str(_CUT3R_ROOT / "src" / "cut3r_512_dpt_4_64.pth"),
-        help="Path to the pretrained model checkpoint.",
+        default=_resolve_model_path(),
+        help="Path to the pretrained model checkpoint (auto-resolved from backends/cut3r/src/, checkpoints/, or ~/.cache/wildlift/).",
     )
     parser.add_argument(
         "--seq_path",
@@ -2331,6 +2348,7 @@ def prepare_output_overlay_unified(outputs, outdir, revisit=1, use_pose=True,
         "pp": pp.cpu().numpy(),
         "R": R_c2w.cpu().numpy(),
         "t": t_c2w.cpu().numpy(),
+        "model_size": (H, W),  # Store actual model dimensions for reprojection
     }
 
     print(f"✓ Configured camera parameters")
@@ -2420,8 +2438,15 @@ def prepare_output_overlay_unified(outputs, outdir, revisit=1, use_pose=True,
             #     img = 0.5 * (view_output["img"] + 1.0)
             #     projection_images.append(img)
 
-            projection_images = original_images
-            
+            # Resize original images to model size for correct projection
+            # (camera intrinsics are computed at model resolution)
+            model_h, model_w = cam_dict["model_size"]
+            projection_images = []
+            for orig_img in original_images:
+                resized = cv2.resize(orig_img, (model_w, model_h), interpolation=cv2.INTER_LINEAR)
+                projection_images.append(resized)
+            print(f"Resized {len(projection_images)} images from original to model size ({model_w}x{model_h})")
+
             # Use enhanced projection with track visualization
             annotated_images = add_2d_projection_with_tracks(
                 original_images=projection_images,

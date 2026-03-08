@@ -52,6 +52,26 @@ def _read_srt(log_file_path: str) -> Optional[str]:
         return f.read()
 
 
+def _split_srt_blocks(content: str) -> List[str]:
+    """Split SRT content into per-entry blocks (separated by blank lines).
+
+    Running regex with ``re.DOTALL`` on the full multi-MB content causes
+    catastrophic backtracking.  Splitting first and matching per-block is
+    instant (~0.02 s for a 2.5 MB file).
+    """
+    return re.split(r'\n\n+', content)
+
+
+def _findall_blocks(pattern: str, blocks: List[str]) -> list:
+    """Run ``re.findall`` per block and collect all matches."""
+    matches: list = []
+    for block in blocks:
+        m = re.findall(pattern, block, re.DOTALL)
+        if m:
+            matches.extend(m)
+    return matches
+
+
 def _resolve_target_frames(
     frame_indices: Optional[List[int]],
     srt_frame_indices: List[int],
@@ -72,7 +92,7 @@ def _resolve_target_frames(
 # Format-specific parsers (return dict or None)
 # ---------------------------------------------------------------------------
 
-def _try_framecnt_gps_new(content: str, frame_indices: Optional[List[int]]) -> Optional[Dict]:
+def _try_framecnt_gps_new(blocks: List[str], frame_indices: Optional[List[int]]) -> Optional[Dict]:
     """FrameCnt with GPS -- new format (gimbal_heading/pitch/roll)."""
     pattern = (
         r'FrameCnt: (\d+).*?'
@@ -83,7 +103,7 @@ def _try_framecnt_gps_new(content: str, frame_indices: Optional[List[int]]) -> O
         r'\[gimbal_pitch\(degrees\):\s*([-\d.]+)\].*?'
         r'\[gimbal_roll\(degrees\):\s*([-\d.]+)\]'
     )
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = _findall_blocks(pattern, blocks)
     if not matches:
         return None
 
@@ -106,7 +126,7 @@ def _try_framecnt_gps_new(content: str, frame_indices: Optional[List[int]]) -> O
     return data or None
 
 
-def _try_framecnt_gps_old(content: str, frame_indices: Optional[List[int]]) -> Optional[Dict]:
+def _try_framecnt_gps_old(blocks: List[str], frame_indices: Optional[List[int]]) -> Optional[Dict]:
     """FrameCnt with GPS -- old format (gb_yaw/pitch/roll, focal_len)."""
     pattern = (
         r'FrameCnt: (\d+).*?'
@@ -115,7 +135,7 @@ def _try_framecnt_gps_old(content: str, frame_indices: Optional[List[int]]) -> O
         r'\[rel_alt: ([\d.]+) abs_alt: ([\d.]+)\] '
         r'\[gb_yaw: ([-\d.]+) gb_pitch: ([-\d.]+) gb_roll: ([-\d.]+)\]'
     )
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = _findall_blocks(pattern, blocks)
     if not matches:
         return None
 
@@ -140,7 +160,7 @@ def _try_framecnt_gps_old(content: str, frame_indices: Optional[List[int]]) -> O
     return data or None
 
 
-def _try_srtcnt_kabr(content: str, frame_indices: Optional[List[int]]) -> Optional[Dict]:
+def _try_srtcnt_kabr(blocks: List[str], frame_indices: Optional[List[int]]) -> Optional[Dict]:
     """SrtCnt KABR format (space before colon, no altitude)."""
     pattern = (
         r'SrtCnt : (\d+).*?'
@@ -148,7 +168,7 @@ def _try_srtcnt_kabr(content: str, frame_indices: Optional[List[int]]) -> Option
         r'\[gimbal_pitch\(degrees\): ([-\d.]+)\].*?'
         r'\[gimbal_roll\(degrees\): ([-\d.]+)\]'
     )
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = _findall_blocks(pattern, blocks)
     if not matches:
         return None
 
@@ -169,14 +189,14 @@ def _try_srtcnt_kabr(content: str, frame_indices: Optional[List[int]]) -> Option
     return data or None
 
 
-def _try_framecnt_gimbal_only(content: str, frame_indices: Optional[List[int]]) -> Optional[Dict]:
+def _try_framecnt_gimbal_only(blocks: List[str], frame_indices: Optional[List[int]]) -> Optional[Dict]:
     """FrameCnt gimbal-only with rel_alt (original format)."""
     pattern = (
         r'FrameCnt: (\d+).*?'
         r'\[rel_alt: ([\d.]+).*?'
         r'\[gb_yaw: ([-\d.]+) gb_pitch: ([-\d.]+) gb_roll: ([-\d.]+)\]'
     )
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = _findall_blocks(pattern, blocks)
     if not matches:
         return None
 
@@ -197,7 +217,7 @@ def _try_framecnt_gimbal_only(content: str, frame_indices: Optional[List[int]]) 
     return data or None
 
 
-def _try_srtcnt_fallback(content: str, frame_indices: Optional[List[int]]) -> Optional[Dict]:
+def _try_srtcnt_fallback(blocks: List[str], frame_indices: Optional[List[int]]) -> Optional[Dict]:
     """SrtCnt fallback with altitude (no space before colon)."""
     pattern = (
         r'SrtCnt: (\d+).*?'
@@ -206,7 +226,7 @@ def _try_srtcnt_fallback(content: str, frame_indices: Optional[List[int]]) -> Op
         r'\[gimbal_pitch\(degrees\):\s*([-\d.]+)\].*?'
         r'\[gimbal_roll\(degrees\):\s*([-\d.]+)\]'
     )
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = _findall_blocks(pattern, blocks)
     if not matches:
         return None
 
@@ -262,6 +282,9 @@ def parse_dji_logs(
     print(f"Parsing DJI log: {log_file_path}")
     print(f"SRT file size: {len(content):,} characters")
 
+    # Split into per-entry blocks to avoid catastrophic regex backtracking
+    blocks = _split_srt_blocks(content)
+
     # Try each format in priority order
     parsers = [
         ("FrameCnt GPS new", _try_framecnt_gps_new),
@@ -273,7 +296,7 @@ def parse_dji_logs(
 
     result = None
     for label, parser in parsers:
-        result = parser(content, frame_indices)
+        result = parser(blocks, frame_indices)
         if result is not None:
             print(f"Matched format: {label}")
             break
@@ -301,7 +324,7 @@ def parse_dji_logs(
             )
 
     # Free memory from large SRT content
-    del content
+    del content, blocks
     gc.collect()
 
     return result
@@ -332,25 +355,28 @@ def parse_dji_logs_with_gps(
     print(f"Parsing DJI log with GPS: {log_file_path}")
     print(f"SRT file size: {len(content):,} characters")
 
+    # Split into per-entry blocks to avoid catastrophic regex backtracking
+    blocks = _split_srt_blocks(content)
+
     # Try GPS formats first
-    result = _try_framecnt_gps_new(content, frame_indices)
+    result = _try_framecnt_gps_new(blocks, frame_indices)
     if result is not None:
         print(f"Parsed GPS data (new format) for {len(result):,} frames")
         _print_gps_sample(result)
-        del content
+        del content, blocks
         gc.collect()
         return result
 
-    result = _try_framecnt_gps_old(content, frame_indices)
+    result = _try_framecnt_gps_old(blocks, frame_indices)
     if result is not None:
         print(f"Parsed GPS data (old format) for {len(result):,} frames")
         _print_gps_sample(result)
-        del content
+        del content, blocks
         gc.collect()
         return result
 
     print("GPS pattern not matched in SRT file, falling back to gimbal-only parsing")
-    del content
+    del content, blocks
     gc.collect()
 
     # Fall back to the auto-detect path (gimbal-only formats)

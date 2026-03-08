@@ -1,10 +1,8 @@
 # WildLIFT Toolkit
 
-> **[PAPER TITLE]**, *Venue 2025*
-
 WildLIFT is a modular framework for **3D wildlife detection, tracking, and analysis from drone footage**. It reconstructs 3D scenes from monocular video, segments individual animals, fits oriented 3D bounding boxes, tracks identities across frames, and provides tools for viewpoint-aware analysis, annotation, and publication-quality visualization.
 
-The 3D reconstruction backend ([CUT3R](https://github.com/CUT3R)) and the segmentation backend ([Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)) are pluggable **git submodules** under `backends/`. Either can be replaced by any system that conforms to the interface described in [Backend Interface](#backend-interface).
+The 3D reconstruction backend ([CUT3R](https://github.com/vandyshukla04/CUT3R)) and the segmentation backend ([Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)) are pluggable **git submodules** under `backends/`. Either can be replaced by any system that conforms to the interface described in [Backend Interface](#backend-interface).
 
 ---
 
@@ -60,7 +58,7 @@ Data flow summary:
 ### 1. Clone with submodules
 
 ```bash
-git clone --recurse-submodules https://github.com/<org>/wildlift-framework.git
+git clone --recurse-submodules https://github.com/vandyshukla04/wildlift-framework.git
 cd wildlift-framework
 ```
 
@@ -78,48 +76,82 @@ pip install -r requirements.txt
 cd ../..
 ```
 
-### 3. Install WildLIFT requirements
+### 3. Install Grounded-SAM-2 backend dependencies
+
+Follow the setup instructions in [`backends/grounded-sam-2/README.md`](backends/grounded-sam-2/README.md), or:
+
+```bash
+cd backends/grounded-sam-2
+pip install -e .
+cd ../..
+```
+
+> **Note for reviewers:** The sample data includes pre-computed masks, so this step can be skipped if you are only running the provided examples. Grounded-SAM-2 is needed when generating masks for new data.
+
+### 4. Install WildLIFT requirements
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Download the model checkpoint
+### 5. Download the model checkpoint
 
-Download `cut3r_512_dpt_4_64.pth` and place it at:
+Download `cut3r_512_dpt_4_64.pth` into the CUT3R submodule (same as CUT3R's own setup):
 
+```bash
+pip install gdown
+cd backends/cut3r/src
+gdown --fuzzy https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/view?usp=drive_link
+cd ../../..
 ```
-backends/cut3r/src/cut3r_512_dpt_4_64.pth
-```
+
+The pipeline auto-searches for the checkpoint in `backends/cut3r/src/`, `checkpoints/`, and `~/.cache/wildlift/`. If the checkpoint is in any of those locations, `--model_path` is not needed.
 
 ---
 
 ## Quick Start
 
+The sample data includes image frames, pre-computed segmentation masks, and DJI SRT metadata. Replace `<DATA_DIR>` with the path to the sample data directory.
+
 **Step 1 -- Run 3D reconstruction and tracking:**
 
 ```bash
 python run_wildlift_rt.py \
-    --seq_path data/zebras/scene1 \
-    --mask_dir data/zebras/scene1/grounded-sam \
-    --device cuda
+    --seq_path <DATA_DIR>/zebr-3 \
+    --mask_dir <DATA_DIR>/zebr-3/grounded-sam \
+    --output_dir results/zebr-3 \
+    --device cuda --size 512 --tracker kalman \
+    --dji_log <DATA_DIR>/zebr-3/DJI_20240119124120_0003_V.SRT
 ```
 
 **Step 2 -- Annotate and correct bounding boxes:**
 
 ```bash
 python run_wildlift_a.py \
-    --auto_bboxes results/scene1/bounding_boxes \
-    --output results/scene1/corrected \
-    --images data/zebras/scene1
+    --auto_bboxes results/zebr-3/bounding_boxes \
+    --output results/zebr-3/corrected_bboxes \
+    --images <DATA_DIR>/zebr-3 \
+    --mask_dir <DATA_DIR>/zebr-3/grounded-sam
 ```
+
+Opens a browser-based 3D editor at `http://localhost:8080`.
 
 **Step 3 -- Analyze viewpoints:**
 
 ```bash
 python run_wildlift_v.py \
-    --annotator_output results/scene1/corrected \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir <DATA_DIR>/zebr-3 \
     --aggregate --load_saved
+```
+
+**Step 3b -- With semantic face propagation:**
+
+```bash
+python run_wildlift_v.py \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir <DATA_DIR>/zebr-3 \
+    --aggregate --load_saved --semantic
 ```
 
 ---
@@ -142,7 +174,7 @@ python run_wildlift_rt.py [OPTIONS]
 |---|---|---|
 | `--seq_path` | *(required)* | Directory containing the image sequence |
 | `--mask_dir` | *(required)* | Directory containing Grounded-SAM mask JSON files |
-| `--model_path` | `backends/cut3r/src/cut3r_512_dpt_4_64.pth` | Path to pretrained model checkpoint |
+| `--model_path` | *(auto-resolved)* | Path to pretrained model checkpoint. Auto-searches `backends/cut3r/src/`, `checkpoints/`, `~/.cache/wildlift/` |
 | `--device` | `cuda` | Device for inference (`cuda` or `cpu`) |
 | `--size` | `512` | Input image rescale resolution |
 | `--tracker` | `kalman` | Tracking method: `kalman` or `simple` |
@@ -188,8 +220,8 @@ Re-run tracking on existing reconstruction outputs without re-running CUT3R:
 
 ```bash
 python -m wildlift.rt.retracker \
-    --result_dir results/scene1 \
-    --source_images data/zebras/scene1 \
+    --result_dir results/zebr-3 \
+    --source_images /path/to/zebr-3 \
     --output_subfolder retracked \
     --max_missing_frames 20 \
     --dormant_timeout 100 \
@@ -204,9 +236,9 @@ Evaluate tracking performance against ground-truth annotations (MOTChallenge for
 
 ```bash
 python -m wildlift.rt.eval_tracking \
-    --gt results/gt_annotations/giraffes/gira-1_1 \
-    --pred results/thursday/giraffes/gira-1_1 \
-    --pred_retracked results/thursday/giraffes/gira-1_1/retracked
+    --gt results/gt_annotations/zebras/zebr-3 \
+    --pred results/zebr-3 \
+    --pred_retracked results/zebr-3/retracked
 ```
 
 #### Baseline comparison
@@ -215,8 +247,8 @@ Run 2D baseline trackers (ByteTrack, BotSORT, OC-SORT) on the same detections fo
 
 ```bash
 python -m wildlift.rt.run_baselines \
-    --result_dir results/thursday/giraffes/gira-1_1 \
-    --source_images data/gira/gira-1_1 \
+    --result_dir results/zebr-3 \
+    --source_images /path/to/zebr-3 \
     --trackers bytetrack botsort ocsort
 ```
 
@@ -286,7 +318,7 @@ python run_wildlift_v.py [OPTIONS]
 | Argument | Default | Description |
 |---|---|---|
 | `--annotator_output` | *(required)* | Path to annotator/corrected bbox output directory |
-| `--images_dir` | | Path to original images |
+| `--images_dir` | | Path to original images (required when using `--semantic`) |
 | `--mask_dir` | | Path to Grounded-SAM mask directory |
 | `--results_dir` | | Path to results directory |
 | `--min_quality` | `0.3` | Minimum quality threshold |
@@ -297,7 +329,7 @@ python run_wildlift_v.py [OPTIONS]
 | `--select_tracks` | off | Interactively select which tracks to process |
 | `--select_rejected` | off | Enable rejected frame selection in interactive mode |
 | `--show_rejected` | off | Show rejected frames in output PDFs |
-| `--semantic` | off | Run semantic face propagation after viewpoint analysis |
+| `--semantic` | off | Run semantic face propagation after viewpoint analysis (requires `--images_dir`) |
 | `--video_name` | | Video name for PDF title (auto-detected if omitted) |
 
 **Examples:**
@@ -305,21 +337,27 @@ python run_wildlift_v.py [OPTIONS]
 ```bash
 # Aggregate PDF from saved selections (recommended for batch)
 python run_wildlift_v.py \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/ \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
     --load_saved --aggregate
 
 # Interactive selection with rejected frames
 python run_wildlift_v.py \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/ \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
     --aggregate --select_rejected
 
 # Process specific tracks
 python run_wildlift_v.py \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/ \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
     --track_id 0 1 5 --aggregate
+
+# With semantic face propagation
+python run_wildlift_v.py \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
+    --aggregate --load_saved --semantic
 ```
 
 #### Filmstrip generation
@@ -328,7 +366,7 @@ Combine per-track filmstrips from multiple segments into a single publication-qu
 
 ```bash
 python -m wildlift.viewpoint.filmstrip \
-    --segment results/scene1/corrected results/scene2/corrected \
+    --segment results/zebr-3/corrected_bboxes results/zebr-4/corrected_bboxes \
     --output combined_filmstrip.pdf \
     --name "Zebra Study Area"
 ```
@@ -339,8 +377,8 @@ Quantify inter-animal occlusion using 3D ray-OBB intersection and 2D mask overla
 
 ```bash
 python -m wildlift.viewpoint.occlusion \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/ \
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
     --pdf --json --annotated_frames
 ```
 
@@ -350,14 +388,14 @@ Generate Nature Methods-style temporal metric plots (per-face quality, effective
 
 ```bash
 python -m wildlift.viewpoint.metrics_viz \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3
 
 # With pre-computed occlusion data
 python -m wildlift.viewpoint.metrics_viz \
-    --annotator_output results/zebra/scene1/corrected/ \
-    --images_dir data/zebra/scene1/images/ \
-    --occlusion_json results/zebra/scene1/corrected/occlusion_analysis/occlusion_summary.json
+    --annotator_output results/zebr-3/corrected_bboxes \
+    --images_dir /path/to/zebr-3 \
+    --occlusion_json results/zebr-3/corrected_bboxes/occlusion_analysis/occlusion_summary.json
 ```
 
 #### Re-ID proof of concept
@@ -366,9 +404,9 @@ Demonstrates that viewpoint-conditioned feature matching (left-to-left, front-to
 
 ```bash
 python -m wildlift.viewpoint.reid_poc \
-    --results_dir results/thursday/zebras/zebr-14_2 \
-    --images_dir data/zebras/zebr-14_2 \
-    --output_dir results/reid_poc/zebr-14_2
+    --results_dir results/zebr-3 \
+    --images_dir /path/to/zebr-3 \
+    --output_dir results/reid_poc/zebr-3
 
 # Run across all multi-track sequences
 python -m wildlift.viewpoint.reid_poc --run_all --output_dir results/reid_poc
@@ -442,19 +480,33 @@ The `wildlift/tools/` package contains standalone visualization utilities:
 ```bash
 # Visualize mask tracks
 python -m wildlift.tools.mask_track_viz \
-    --images data/gira/gira-1_1 \
-    --masks results/gira-1_1/instance_labels \
-    --mapping results/gira-1_1/mask_track_mapping.json \
-    --output results/gira-1_1/mask_vis
+    --images /path/to/zebr-3 \
+    --masks results/zebr-3/instance_labels \
+    --mapping results/zebr-3/mask_track_mapping.json \
+    --output results/zebr-3/mask_vis
 
 # Ecology paper figures
 python -m wildlift.tools.ecology_viz \
-    --result_dir results/wildlift/zebra-scene1 \
+    --result_dir results/zebr-3 \
     --output_dir figures/
 
 # Point cloud viewer
-python -m wildlift.tools.pointcloud_viz results/scene1/pointclouds/frame_0000.ply
+python -m wildlift.tools.pointcloud_viz results/zebr-3/pointclouds/frame_0000.ply
 ```
+
+---
+
+## Backend Submodules
+
+### CUT3R (3D Reconstruction)
+
+The CUT3R submodule at `backends/cut3r/` provides the 3D reconstruction backend. Its dependencies are installed in step 2 of the installation. The model checkpoint is downloaded in step 4. For details on CUT3R itself (training, architecture, additional options), see [`backends/cut3r/README.md`](backends/cut3r/README.md).
+
+### Grounded-SAM-2 (Segmentation)
+
+The Grounded-SAM-2 submodule at `backends/grounded-sam-2/` is included for **reproducibility** -- it documents the exact segmentation system used to generate the instance masks. The sample data includes pre-computed masks, so **Grounded-SAM-2 does not need to be installed** to run the pipeline.
+
+To generate masks for new data, follow the setup and usage instructions in [`backends/grounded-sam-2/README.md`](backends/grounded-sam-2/README.md).
 
 ---
 
@@ -581,7 +633,7 @@ Drone video
 
 ```
 1. Run batch viewpoint analysis across sequences:
-     python run_wildlift_v.py --annotator_output <dir> --aggregate --load_saved
+     python run_wildlift_v.py --annotator_output <dir> --images_dir <images> --aggregate --load_saved
 
 2. Generate combined filmstrips:
      python -m wildlift.viewpoint.filmstrip \
@@ -598,16 +650,14 @@ Drone video
 
 ---
 
-## Citation
+## Acknowledgments
 
-```bibtex
-@inproceedings{wildlift2025,
-  title     = {WildLIFT: Wildlife Localization, Identification and Filming Toolkit},
-  author    = {TODO},
-  booktitle = {TODO Venue},
-  year      = {2025}
-}
-```
+WildLIFT builds on the following open-source projects:
+
+- **[CUT3R](https://github.com/CUT3R-official/CUT3R)** -- 3D reconstruction from unposed images. WildLIFT uses CUT3R as its default 3D reconstruction backend.
+- **[Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)** -- Grounded segmentation combining Grounding DINO with SAM 2. WildLIFT uses Grounded-SAM-2 to generate per-frame instance segmentation masks.
+
+We thank the authors of both projects for making their code publicly available.
 
 ---
 

@@ -1851,7 +1851,7 @@ Examples:
         print("=" * 70)
         try:
             from wildlift.viewpoint.semantic_propagator import TrackletViewpointAnalyzer
-            sem_analyzer = TrackletViewpointAnalyzer(args.annotator_output)
+            sem_analyzer = TrackletViewpointAnalyzer(args.annotator_output, args.images_dir)
             sem_analyzer.run()
             print("Semantic face propagation complete.")
         except ImportError:
